@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+georiesgo.db
+georiesgo.db-shm
+georiesgo.db-wal
+.georiesgo_secret
