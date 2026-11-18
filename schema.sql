@@ -125,3 +125,20 @@ VALUES
     ('Erosión observada', 'pendiente', 'Sin capa nacional oficial integrada', '', 'Los porcentajes precargados son demostrativos; no son detecciones observadas.', '{}', 1),
     ('Eventos registrados por usuarios', 'GeoJSON', 'Base de datos GeoRiesgo', 'actualizado al consultar', 'Registros colaborativos; la ubicación puede aproximarse al centro regional.', '{}', 0)
 ON CONFLICT (name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS seismic_analyses (
+    id BIGSERIAL PRIMARY KEY,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    place TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    score INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    pga_475 DOUBLE PRECISION NOT NULL,
+    max_magnitude DOUBLE PRECISION NOT NULL,
+    evidence_json TEXT NOT NULL,
+    report TEXT NOT NULL,
+    model_source TEXT NOT NULL,
+    created_by BIGINT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+);

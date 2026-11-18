@@ -338,7 +338,8 @@ function handleMapClick(event) {
     }
     return;
   }
-  L.popup().setLatLng(event.latlng).setContent(`Coordenadas<br><strong>${lat.toFixed(5)}°, ${lng.toFixed(5)}°</strong>`).openOn(state.map);
+  if (typeof openSeismicPopup === 'function') openSeismicPopup(event.latlng);
+  else L.popup().setLatLng(event.latlng).setContent(`Coordenadas<br><strong>${lat.toFixed(5)}°, ${lng.toFixed(5)}°</strong>`).openOn(state.map);
 }
 
 function startMeasurement(mode) {
@@ -824,6 +825,7 @@ function setView(name) {
   $('#page-title').textContent = name === 'map' ? 'Visor geográfico mundial' : labels[name];
   if (name === 'map' && state.map) setTimeout(() => state.map.invalidateSize(), 40);
   if (name === 'dashboard') loadDashboard();
+  if (name === 'map' && typeof loadSeismicHistory === 'function') loadSeismicHistory();
   if (name === 'history' || name === 'reports') loadAssessments();
   if (name === 'users' && state.user?.role === 'admin') loadUsers();
   if (name === 'settings') Promise.all([loadProfile(), loadLayerCatalog()]);

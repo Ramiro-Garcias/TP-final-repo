@@ -84,6 +84,12 @@
             </section>
           </aside>
         </div>
+        <section class="seismic-section" id="seismic-section">
+          <div class="section-heading"><div><div class="eyebrow">AGENTE IA · RIESGO SÍSMICO</div><h2 id="seismic-title">Riesgo sísmico del punto</h2></div><div class="seismic-actions"><button class="button button-green" id="seismic-run-button" type="button" disabled><i data-lucide="activity"></i> Analizar riesgo sísmico del punto</button><a class="button button-outline hidden" id="seismic-pdf-link" href="#"><i data-lucide="download"></i> PDF</a></div></div>
+          <div id="seismic-status" class="region-details empty-state">Hacé clic en cualquier punto del mapa: la IA consulta el catálogo sísmico oficial (USGS), calcula la peligrosidad y estima magnitud máxima, recurrencia y si conviene vivir ahí.</div>
+          <div id="seismic-result" class="hidden"></div>
+          <div class="seismic-history-box"><h4>Análisis sísmicos recientes</h4><div id="seismic-history" class="compact-list"></div></div>
+        </section>
         <section class="data-section"><div class="section-heading"><div><div class="eyebrow">COMPARATIVA</div><h2>Indicadores por región</h2></div><div class="table-meta">RIESGOS LOCALES · INDICADORES DE EJEMPLO</div></div><div class="table-wrap"><table><thead><tr><th>REGIÓN</th><th>ELEVACIÓN</th><th>PENDIENTE</th><th>INUNDACIÓN</th><th>EROSIÓN</th><th>VULNERABILIDAD</th></tr></thead><tbody id="region-table"></tbody></table></div></section>
       </section>
       <section class="view-panel hidden" id="analysis-view"><div class="view-intro"><div><div class="eyebrow">PROCESAMIENTO GEOESPACIAL</div><h1>Nuevo análisis territorial</h1><p>Seleccioná una región y los factores a incluir. El resultado diferencia datos medidos de indicadores demostrativos.</p></div></div><form id="analysis-form" class="analysis-form"><label>Localidad o región<select id="analysis-region" required></select></label><fieldset class="risk-options"><legend>Riesgos a evaluar</legend><label><input type="checkbox" name="risks" value="flood" checked> Inundación</label><label><input type="checkbox" name="risks" value="erosion" checked> Erosión</label><label><input type="checkbox" name="risks" value="topography" checked> Topografía</label><label><input type="checkbox" name="risks" value="general" checked> Vulnerabilidad general</label></fieldset><button class="button button-green" id="run-analysis-button" type="submit"><i data-lucide="sparkles"></i> Ejecutar análisis</button><p class="form-error" id="analysis-error" role="alert"></p></form><div class="analysis-output hidden" id="analysis-output"></div></section>
@@ -101,5 +107,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/seismic.js"></script>
 </body>
 </html>

@@ -21,6 +21,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import seismic
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE = BASE_DIR / "georiesgo.db"
@@ -130,6 +132,22 @@ def initialize_database():
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL CHECK (role IN ('admin', 'analyst')),
             is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS seismic_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            place TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT '',
+            score INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            pga_475 REAL NOT NULL,
+            max_magnitude REAL NOT NULL,
+            evidence_json TEXT NOT NULL,
+            report TEXT NOT NULL,
+            model_source TEXT NOT NULL,
+            created_by INTEGER NOT NULL REFERENCES users(id),
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS regions (
@@ -295,6 +313,7 @@ def initialize_postgres_database():
             "CREATE TABLE IF NOT EXISTS terrain_indicators (id BIGSERIAL PRIMARY KEY, region_id BIGINT NOT NULL UNIQUE REFERENCES regions(id) ON DELETE CASCADE, elevation_m DOUBLE PRECISION NOT NULL, slope_pct DOUBLE PRECISION NOT NULL, annual_rainfall_mm DOUBLE PRECISION NOT NULL, flood_exposure DOUBLE PRECISION NOT NULL, erosion_exposure DOUBLE PRECISION NOT NULL, soil_stability DOUBLE PRECISION NOT NULL)",
             "CREATE TABLE IF NOT EXISTS environmental_events (id BIGSERIAL PRIMARY KEY, region_id BIGINT NOT NULL REFERENCES regions(id) ON DELETE CASCADE, event_type TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 5), description TEXT NOT NULL, occurred_on TEXT NOT NULL, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, source TEXT NOT NULL DEFAULT '', impact INTEGER NOT NULL DEFAULT 3, photo_path TEXT, created_by BIGINT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vulnerability_assessments (id BIGSERIAL PRIMARY KEY, region_id BIGINT NOT NULL REFERENCES regions(id) ON DELETE CASCADE, score INTEGER NOT NULL, category TEXT NOT NULL, indicators_json TEXT NOT NULL, risks_json TEXT NOT NULL DEFAULT '[]', sources_json TEXT NOT NULL DEFAULT '[]', data_quality TEXT NOT NULL DEFAULT '', report TEXT NOT NULL, model_source TEXT NOT NULL, created_by BIGINT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS seismic_analyses (id BIGSERIAL PRIMARY KEY, latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL, place TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL, category TEXT NOT NULL, pga_475 DOUBLE PRECISION NOT NULL, max_magnitude DOUBLE PRECISION NOT NULL, evidence_json TEXT NOT NULL, report TEXT NOT NULL, model_source TEXT NOT NULL, created_by BIGINT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS region_source_data (region_id BIGINT PRIMARY KEY REFERENCES regions(id) ON DELETE CASCADE, metadata_json TEXT NOT NULL, features_json TEXT NOT NULL, dem_samples_json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS geographic_layers (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, layer_type TEXT NOT NULL, source TEXT NOT NULL, data_date TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', geojson TEXT NOT NULL DEFAULT '{}', is_demo INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1)",
         ]
@@ -418,6 +437,7 @@ def fetch_geography(latitude, longitude):
         "longitude": longitude,
         "place": water_body if not country and water_body else locality or water_body or "Lugar sin nombre en el mapa",
         "country": country,
+        "country_code": place_data.get("countryCode") or None,
         "water_body": water_body,
         "elevation_m": elevation_values[0] if elevation_values else None,
         "temperature_c": current.get("temperature_2m"),
@@ -506,10 +526,10 @@ def generate_report(region, indicators, score, category, recent_severity, risk_f
     if not api_key:
         return generate_report_without_ai(region, indicators, score, category, recent_severity, risk_factors, data_quality), "Clasificador local explicable"
 
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    model = os.environ.get("GEMINI_MODEL") or seismic.DEFAULT_GEMINI_MODEL
+    url = seismic.GEMINI_URL.format(model=model)
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
     try:
         with urllib.request.urlopen(req, timeout=12) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -1061,6 +1081,121 @@ def assessment_pdf(assessment_id):
     stream.seek(0)
     return send_file(stream, mimetype="application/pdf", as_attachment=True,
                      download_name=f"georiesgo-analisis-{assessment_id}.pdf")
+
+
+def _valid_coordinates(payload):
+    try:
+        latitude = float(payload.get("latitude"))
+        longitude = float(payload.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(latitude) or not math.isfinite(longitude) or not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        return None
+    return latitude, longitude
+
+
+def _seismic_visible(row):
+    user = current_user()
+    return bool(row) and (user["role"] == "admin" or row["created_by"] == user["id"])
+
+
+@app.post("/api/seismic/analyze")
+@login_required
+def seismic_analyze():
+    coordinates = _valid_coordinates(request.get_json(silent=True) or {})
+    if not coordinates:
+        return jsonify(error="Indicá latitud (-90 a 90) y longitud (-180 a 180) válidas."), 400
+    latitude, longitude = coordinates
+    geography = fetch_geography(latitude, longitude)
+    if geography.get("water_body") and not geography.get("country"):
+        geography["place"] = geography["water_body"]
+    try:
+        evidence = seismic.analyze_point(latitude, longitude, geography, os.environ.get("GEMINI_API_KEY"))
+    except seismic.SeismicDataError as error:
+        return jsonify(error=str(error)), 502
+    point = evidence["point"]
+    max_local = evidence["catalog"]["max_magnitude_local"]
+    db = get_db()
+    cursor = db.execute(
+        """INSERT INTO seismic_analyses
+              (latitude, longitude, place, country, score, category, pga_475, max_magnitude, evidence_json, report, model_source, created_by, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (latitude, longitude, point.get("place") or "", point.get("country") or "", evidence["score"], evidence["category"],
+         evidence["catalog"]["hazard"]["pga_475_g"], max_local["magnitude"] if max_local else 0.0,
+         json.dumps(evidence, ensure_ascii=False), evidence["report"], evidence["model_source"],
+         session["user_id"], datetime.now(timezone.utc).isoformat()),
+    )
+    db.commit()
+    return jsonify(id=cursor.lastrowid, analysis=evidence), 201
+
+
+@app.get("/api/seismic")
+@login_required
+def seismic_history():
+    user = current_user()
+    query = (
+        "SELECT s.id, s.latitude, s.longitude, s.place, s.country, s.score, s.category, s.pga_475, s.max_magnitude, "
+        "s.model_source, s.created_at, u.username AS created_by_name FROM seismic_analyses s JOIN users u ON u.id = s.created_by"
+    )
+    parameters = ()
+    if user["role"] != "admin":
+        query += " WHERE s.created_by = ?"
+        parameters = (user["id"],)
+    rows = get_db().execute(query + " ORDER BY s.id DESC LIMIT 50", parameters).fetchall()
+    return jsonify(analyses=[dict(row) for row in rows])
+
+
+@app.get("/api/seismic/<int:analysis_id>")
+@login_required
+def seismic_detail(analysis_id):
+    row = get_db().execute("SELECT * FROM seismic_analyses WHERE id = ?", (analysis_id,)).fetchone()
+    if not _seismic_visible(row):
+        return jsonify(error="Análisis no encontrado."), 404
+    return jsonify(id=row["id"], analysis=json.loads(row["evidence_json"]))
+
+
+@app.get("/api/seismic/<int:analysis_id>/pdf")
+@login_required
+def seismic_pdf(analysis_id):
+    from io import BytesIO
+    from flask import send_file
+
+    row = get_db().execute("SELECT * FROM seismic_analyses WHERE id = ?", (analysis_id,)).fetchone()
+    if not _seismic_visible(row):
+        return jsonify(error="Análisis no encontrado."), 404
+    evidence = json.loads(row["evidence_json"])
+    catalog, point = evidence["catalog"], evidence["point"]
+    hazard = catalog["hazard"]
+    stream = BytesIO()
+    document = SimpleDocTemplate(stream, pagesize=A4, title=f"GeoRiesgo sísmico - {point.get('place') or analysis_id}")
+    styles = getSampleStyleSheet()
+    header = [
+        f"Lugar: {point.get('place') or 'sin nombre'} · {point.get('country') or ''}",
+        f"Coordenadas: {point['latitude']}, {point['longitude']} · Fecha: {row['created_at']}",
+        f"Riesgo sísmico: {evidence['category']} ({evidence['score']}/100) · Calidad de datos: {evidence['data_quality']}",
+        f"PGA 10 % en 50 años: {hazard['pga_475_g']} g (MMI ~{hazard['mmi_475']}) · PGA 2 % en 50 años: {hazard['pga_2475_g']} g · "
+        f"Clase GSHAP: {hazard['class_gshap']}",
+        f"Magnitud máxima plausible: M{catalog['plausible_max_magnitude']} · Motor: {evidence['model_source']}",
+    ]
+    story = [Paragraph("GeoRiesgo IA · Informe de riesgo sísmico", styles["Title"]), Spacer(1, 12)]
+    story.extend(Paragraph(escape_xml(line), styles["BodyText"]) for line in header)
+    story.extend([Spacer(1, 10), Paragraph("Informe", styles["Heading2"])])
+    story.extend(Paragraph(escape_xml(line) or "&nbsp;", styles["BodyText"]) for line in evidence["report"].splitlines())
+    story.extend([Spacer(1, 10), Paragraph("Sismos mayores del entorno", styles["Heading2"])])
+    for event in catalog["top_events"]:
+        story.append(Paragraph(escape_xml(
+            f"M{event['magnitude']} · {str(event['time'])[:10]} · prof. {event['depth_km']} km · a {event['distance_km']} km · {event['place']}"
+        ), styles["BodyText"]))
+    story.extend([Spacer(1, 10), Paragraph("Fuentes", styles["Heading2"])])
+    for source in evidence["sources"] + evidence["official_sources"]:
+        state = "consultada" if source.get("consulted") else "referencia a verificar"
+        story.append(Paragraph(escape_xml(f"{source['name']} ({state}): {source['url'].split('?')[0]}"), styles["BodyText"]))
+    story.extend([Spacer(1, 10), Paragraph(escape_xml("Método: " + evidence["method"]), styles["BodyText"]),
+                  Paragraph(escape_xml("Limitaciones: " + evidence["limitations"]), styles["BodyText"])])
+    document.build(story)
+    stream.seek(0)
+    return send_file(stream, mimetype="application/pdf", as_attachment=True,
+                     download_name=f"georiesgo-sismico-{analysis_id}.pdf")
 
 
 initialize_database()

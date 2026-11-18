@@ -56,7 +56,24 @@ La URL de ejemplo debe ser `postgresql://...`; no usar el formato de dialecto SQ
 
 Los roles son `admin` y `analyst`. Contraseñas con hash Werkzeug; sesión HttpOnly/SameSite=Lax. Recuperación por email no está activada porque requiere proveedor SMTP y verificación de identidad; para recuperación local, cerrar el servidor y ejecutar `python app.py --reset-password NOMBRE_USUARIO` desde PowerShell.
 
-## Inteligencia artificial y análisis
+## Riesgo sísmico por click en el mapa (agente IA)
+
+En **Mapa interactivo**, al hacer clic en cualquier punto del mundo y presionar *Analizar riesgo sísmico*, el backend ejecuta este flujo:
+
+1. **Catálogos oficiales**: USGS ComCat (sismos M≥4,5 en 300 km desde 1973 y M≥6 en 600 km desde 1900, con MMI/alerta de tsunami cuando existen). Si USGS falla, usa EMSC como respaldo. Las URLs exactas consultadas se guardan y se muestran en el informe para poder verificarlas.
+2. **Terreno**: elevación y pendiente local aproximada (Copernicus DEM GLO-90 vía Open-Meteo).
+3. **Peligrosidad empírica**: aceleración pico (PGA) esperada con 10 % y 2 % de probabilidad en 50 años (Joyner & Boore 1981, tasas por completitud del catálogo), intensidad Mercalli (Worden et al. 2012), clase GSHAP, períodos de retorno de M6/M7/M8 (Gutenberg-Richter, estimador de Aki-Utsu) y magnitud máxima plausible.
+4. **Puntaje 0-100 auditable** (50 % PGA, 30 % magnitud máxima plausible, 20 % frecuencia de M≥5). Lo calcula el código, no la IA.
+5. **Agente Gemini con function calling**: recibe la evidencia y puede *llamar herramientas por su cuenta* (`buscar_sismos` para ampliar radio/magnitud/período en USGS, `simular_escenario` para estimar el efecto de un sismo hipotético, `listar_fuentes_oficiales`), y redacta el informe: resumen, sismicidad histórica, magnitud máxima, si es recomendable vivir ahí, recomendaciones y fuentes. Las herramientas invocadas se muestran en pantalla. Sin `GEMINI_API_KEY` o si la API falla, se genera un informe local con los mismos datos.
+6. Se guarda en `seismic_analyses`, se dibujan los sismos en el mapa (tamaño = magnitud, color = profundidad) y se puede descargar en PDF.
+
+Endpoints: `POST /api/seismic/analyze` (`{latitude, longitude}`), `GET /api/seismic`, `GET /api/seismic/<id>`, `GET /api/seismic/<id>/pdf`. Cada usuario ve solo sus análisis; el administrador ve todos.
+
+**Límites que el informe declara:** el catálogo instrumental cubre ~50 años (M≥4,5) y ~125 años (M≥7), por lo que fallas con ciclos más largos pueden no estar representadas; no se conoce el tipo de suelo ni se modelan fallas locales; la atenuación es genérica. Es una estimación orientativa, no un pronóstico ni reemplaza la zonificación oficial (en Argentina, INPRES-CIRSOC 103) ni un estudio de ingeniería. INPRES, GEM y NOAA figuran como *referencias a verificar* porque no exponen una API pública integrada.
+
+> Importante: `gemini-2.0-flash` fue dado de baja por Google el 1/6/2026. El modelo por defecto ahora es `gemini-3.5-flash` (configurable con `GEMINI_MODEL`); consultá la página de deprecaciones de Gemini por si cambia.
+
+## Inteligencia artificial y análisis (informe territorial original)
 
 Con `GEMINI_API_KEY`, el backend solicita a Gemini una interpretación narrativa de los indicadores persistidos y seleccionados. La clave nunca se envía al navegador. Si la clave falta o la API falla, se guarda un informe explicable local. `GEMINI_MODEL` permite seleccionar el modelo.
 
@@ -81,12 +98,13 @@ Cinco regiones e indicadores de inundación, erosión, lluvia, pendiente y estab
 - `GET /api/dashboard`, `GET /api/regions`, `GET /api/geography?latitude=...&longitude=...`
 - `GET/POST /api/events`, `PUT/DELETE /api/events/<id>`
 - `POST /api/assessments/<region_id>`, `GET /api/assessments`, `GET /api/assessments/<id>`, `GET /api/assessments/<id>/pdf`, `GET /api/assessments/compare?ids=<id>,<id>`
+- `POST /api/seismic/analyze`, `GET /api/seismic`, `GET /api/seismic/<id>`, `GET /api/seismic/<id>/pdf`
 - `GET/POST /api/layers`, `PUT/DELETE /api/layers/<id>` (escritura admin)
 - `GET/POST /api/users`, `PUT/DELETE /api/users/<id>` (admin)
 
 ## Pruebas
 
-Ejecutar `python -m unittest discover -s tests -v`. Las pruebas cubren autenticación, permisos, CRUD, puntuación, PDF, dashboard, perfil, catálogo, validación de coordenadas y persistencia de sesión.
+Ejecutar `python -m unittest discover -s tests -v`. Las pruebas cubren autenticación, permisos, CRUD, puntuación, PDF, dashboard, perfil, catálogo, validación de coordenadas y persistencia de sesión, más (`tests/test_seismic.py`) el motor sísmico, el respaldo EMSC, el bucle del agente con herramientas (Gemini simulado), el fallback local y las rutas `/api/seismic`.
 
 ## Despliegue
 
